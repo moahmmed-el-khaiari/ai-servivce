@@ -1,4 +1,5 @@
 def build_confirmation_text(resolved):
+   
     text = "Vous souhaitez :\n"
 
     for p in resolved["products"]:

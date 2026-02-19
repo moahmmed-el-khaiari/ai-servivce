@@ -1,17 +1,47 @@
 import requests
 import json
+import re
 from app.config import OPENROUTER_API_KEY, DEEPSEEK_MODEL, OPENROUTER_URL
+
+
+def clean_json_response(text: str):
+    """
+    Extract JSON block from LLM response safely
+    """
+    try:
+        # Try direct load
+        return json.loads(text)
+    except:
+        # Extract JSON between { }
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except:
+                pass
+
+    return {"products": [], "menus": []}
 
 
 def extract_order_intent(message: str):
 
     prompt = f"""
-Extract food items and quantities from this sentence.
-Return ONLY valid JSON:
+You are a strict JSON extractor for restaurant orders.
+
+Rules:
+- If a product name contains multiple words (example: "flan tunus"), keep it as ONE single product.
+- If food item found → add it to products
+- If menu found → add it to menus
+- If nothing found → return empty arrays
+- Return ONLY JSON
+- No explanation
+- No text outside JSON
+
+Format:
 
 {{
-  "products": [{{"name": "", "quantity": 0}}],
-  "menus": [{{"name": "", "quantity": 0}}]
+  "products": [{{"name": "string", "quantity": number}}],
+  "menus": [{{"name": "string", "quantity": number}}]
 }}
 
 Sentence:
@@ -26,10 +56,17 @@ Sentence:
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": [
-            {"role": "system", "content": "You extract restaurant orders into strict JSON only."},
-            {"role": "user", "content": prompt}
+            {
+                "role": "system",
+                "content": "You extract structured restaurant orders strictly into JSON."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
         ],
-        "temperature": 0
+        "temperature": 0,
+        "max_tokens": 300
     }
 
     response = requests.post(
@@ -40,17 +77,22 @@ Sentence:
     )
 
     response.raise_for_status()
-
     data = response.json()
 
     content = data["choices"][0]["message"]["content"]
 
-    # 🔥 sécurisation JSON
-    try:
-        return json.loads(content)
-    except:
-        # nettoyer si LLM ajoute texte
-        start = content.find("{")
-        end = content.rfind("}") + 1
-        clean_json = content[start:end]
-        return json.loads(clean_json)
+    return clean_json_response(content)
+def quick_extract(message: str):
+    pattern = r"(\d+)\s+(.+)"
+    match = re.match(pattern, message.strip())
+
+    if match:
+        quantity = int(match.group(1))
+        name = match.group(2).strip()
+
+        return {
+            "products": [{"name": name, "quantity": quantity}],
+            "menus": []
+        }
+
+    return None
