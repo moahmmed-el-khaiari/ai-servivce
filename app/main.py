@@ -7,10 +7,11 @@ from app.state_machine.conversation_manager import (
     clear_session
 )
 from app.state_machine.conversation_states import ConversationState
-from app.services.llm_service import extract_order_intent , quick_extract  
+from app.services.llm_service import extract_order_intent
 from app.services.summary_service import build_summary
 from app.clients.order_client import create_order
 from app.services.name_to_id_mapper import map_names_to_ids
+from app.services.product_category_service import get_products_by_category
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -23,9 +24,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # =============================
-# 🔹 Helpers
+# Helpers
 # =============================
 def is_yes(message: str):
     return message.lower().strip() in ["oui", "yes", "ok", "d'accord"]
@@ -35,7 +35,7 @@ def is_no(message: str):
 
 
 # =============================
-# 🔥 CHAT ENDPOINT
+# CHAT ENDPOINT
 # =============================
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
@@ -44,7 +44,7 @@ def chat(request: ChatRequest):
     state = session["state"]
 
     # =========================
-    # 🔹 WELCOME
+    # WELCOME
     # =========================
     if state == ConversationState.WELCOME:
         update_state(request.session_id, ConversationState.MAIN_MENU)
@@ -57,7 +57,7 @@ def chat(request: ChatRequest):
         )
 
     # =========================
-    # 🔹 ORDERING
+    # ORDERING
     # =========================
     if state in [ConversationState.MAIN_MENU, ConversationState.ORDERING]:
 
@@ -76,13 +76,13 @@ def chat(request: ChatRequest):
         )
 
     # =========================
-    # 🔹 DRINK OFFER
+    # DRINK OFFER
     # =========================
     if state == ConversationState.DRINK_OFFER:
 
         if is_yes(request.message):
             update_state(request.session_id, ConversationState.DRINK_SELECTION)
-            return ChatResponse(reply="Très bien 👍 Quelle boisson souhaitez-vous ?")
+            return ChatResponse(reply="Quelle boisson souhaitez-vous ?")
 
         if is_no(request.message):
             update_state(request.session_id, ConversationState.DESSERT_OFFER)
@@ -91,22 +91,39 @@ def chat(request: ChatRequest):
         return ChatResponse(reply="Veuillez répondre par oui ou non.")
 
     # =========================
-    # 🔹 DRINK SELECTION
+    # DRINK SELECTION
     # =========================
     if state == ConversationState.DRINK_SELECTION:
 
-        parsed = quick_extract(request.message)
-        if not parsed:
-            parsed = extract_order_intent(request.message)
-        if parsed:
-            add_to_cart(request.session_id, parsed)
+        if is_no(request.message):
+            update_state(request.session_id, ConversationState.DESSERT_OFFER)
+            return ChatResponse(reply="Très bien 👍 Passons aux desserts.\nSouhaitez-vous un dessert ?")
+
+        parsed = extract_order_intent(request.message)
+        mapped_payload, not_found = map_names_to_ids(parsed)
+
+        if not mapped_payload["products"]:
+
+            drinks = get_products_by_category("DRINK")
+            drink_list = "\n".join([f"- {d['name']}" for d in drinks if d["available"]])
+
+            return ChatResponse(
+                reply=(
+                    "Désolé, cette boisson n'est pas disponible.\n"
+                    f"Voici nos boissons disponibles :\n{drink_list}\n\n"
+                    "Souhaitez-vous autre chose ?"
+                )
+            )
+
+        # 🔥 Ajouter seulement les produits valides
+        add_to_cart(request.session_id, parsed)
 
         update_state(request.session_id, ConversationState.DESSERT_OFFER)
 
         return ChatResponse(reply="Boisson ajoutée ✅\nSouhaitez-vous un dessert ?")
 
     # =========================
-    # 🔹 DESSERT OFFER
+    # DESSERT OFFER
     # =========================
     if state == ConversationState.DESSERT_OFFER:
 
@@ -116,77 +133,71 @@ def chat(request: ChatRequest):
 
         if is_no(request.message):
             update_state(request.session_id, ConversationState.SUMMARY)
-            session = get_session(request.session_id)
             summary = build_summary(session["cart"])
-            return ChatResponse(reply=summary +"\n\nConfirmez-vous votre commande ?")
+            return ChatResponse(reply=summary + "\n\nConfirmez-vous votre commande ?")
 
         return ChatResponse(reply="Veuillez répondre par oui ou non.")
 
     # =========================
-    # 🔹 DESSERT SELECTION
+    # DESSERT SELECTION
     # =========================
     if state == ConversationState.DESSERT_SELECTION:
 
-        parsed = quick_extract(request.message)
-        if not parsed:
-            parsed = extract_order_intent(request.message)
+        if is_no(request.message):
+            update_state(request.session_id, ConversationState.SUMMARY)
+            summary = build_summary(session["cart"])
+            return ChatResponse(reply=summary + "\n\nConfirmez-vous votre commande ?")
 
-        if parsed:
-            add_to_cart(request.session_id, parsed)
+        parsed = extract_order_intent(request.message)
+        mapped_payload, not_found = map_names_to_ids(parsed)
 
+        if not mapped_payload["products"]:
+
+            desserts = get_products_by_category("DESSERT")
+            dessert_list = "\n".join([f"- {d['name']}" for d in desserts if d["available"]])
+
+            return ChatResponse(
+                reply=(
+                    "Désolé, ce dessert n'est pas disponible.\n"
+                    f"Voici nos desserts disponibles :\n{dessert_list}\n\n"
+                    "Souhaitez-vous autre chose ?"
+                )
+            )
+
+        add_to_cart(request.session_id, parsed)
         update_state(request.session_id, ConversationState.SUMMARY)
 
-        session = get_session(request.session_id)
         summary = build_summary(session["cart"])
-
         return ChatResponse(reply=summary + "\n\nConfirmez-vous votre commande ?")
 
     # =========================
-    # 🔹 CONFIRMATION
+    # CONFIRMATION
     # =========================
     if state == ConversationState.SUMMARY:
 
         if is_yes(request.message):
 
-            session = get_session(request.session_id)
-
             try:
-                # 🔥 mapping name → id
                 mapped_payload, not_found = map_names_to_ids(session["cart"])
 
                 if not mapped_payload["products"] and not mapped_payload["menus"]:
-                    return ChatResponse(
-                        reply="Je ne trouve aucun produit valide. Merci de vérifier."
-                    )
-
-                if not_found:
-                    return ChatResponse(
-                        reply=f"Produit(s) non trouvé(s): {', '.join(not_found)}.\nVeuillez corriger."
-                    )
-
-                print("Payload envoyé à order-service:", mapped_payload)
-                
+                    return ChatResponse(reply="Aucun produit valide trouvé.")
 
                 order = create_order(mapped_payload)
-                
-                
-                print("CART FINAL:", session["cart"])
+
             except Exception as e:
                 print("Erreur création commande:", e)
-                return ChatResponse(
-                    reply="Erreur lors de la création de la commande. Veuillez réessayer."
-                )
+                return ChatResponse(reply="Erreur lors de la création de la commande.")
 
             payment_link = f"https://restaurant.com/pay/{order.get('id')}"
 
             clear_session(request.session_id)
-            
+
             return ChatResponse(
                 reply=(
                     "Commande confirmée ✅\n"
                     f"Total: {order.get('totalAmount', 0)} €\n\n"
-                    "Paiement sécurisé ici :\n"
-                    f"{payment_link}"
+                    f"Paiement sécurisé ici :\n{payment_link}"
                 )
             )
 
@@ -194,8 +205,6 @@ def chat(request: ChatRequest):
             clear_session(request.session_id)
             return ChatResponse(reply="Commande annulée.")
 
-        return ChatResponse(
-            reply="Veuillez répondre par oui ou non pour confirmer votre commande."
-        )
+        return ChatResponse(reply="Veuillez répondre par oui ou non.")
 
     return ChatResponse(reply="Je n'ai pas compris.")
