@@ -22,3 +22,12 @@ def get_all_menus():
     response = requests.get(MENU_SERVICE_URL)
     response.raise_for_status()
     return response.json()
+def get_products_by_category(category: str):
+    response = requests.get(
+        f"{PRODUCT_SERVICE_URL}/category/{category}"
+    )
+
+    if response.status_code != 200:
+        return []
+
+    return response.json()

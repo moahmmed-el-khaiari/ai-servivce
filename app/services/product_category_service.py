@@ -13,10 +13,16 @@ def get_products_by_category(category: str):
         response.raise_for_status()
         data = response.json()
 
-        # 🔥 filtrer uniquement available = true
-        available_products = [
-            p for p in data if p.get("available") == True
-        ]
+        available_products = []
+
+        for p in data:
+            if p.get("available"):
+
+                available_products.append({
+                    "id": p.get("id"),
+                    "name": p.get("name"),
+                    "sizes": p.get("sizes", [])
+                })
 
         return available_products
 

@@ -3,23 +3,32 @@ from app.config import ORDER_SERVICE_URL
 
 
 def create_order(order_payload: dict):
-   
+
+    print("\n🔥 PAYLOAD ENVOYÉ AU ORDER-SERVICE:")
+    print(order_payload)
+    print("🔥 FIN PAYLOAD\n")
+
     try:
         response = requests.post(
-            f"{ORDER_SERVICE_URL}",
+            ORDER_SERVICE_URL,
             json=order_payload,
-            timeout=100
+            timeout=30
         )
 
-        response.raise_for_status()
-        
-        return response.json()
-    
+        print("📡 STATUS CODE:", response.status_code)
+        print("📡 RESPONSE TEXT:", response.text)
 
+        if response.status_code != 200:
+            return {
+                "error": "Backend error",
+                "details": response.text
+            }
+
+        return response.json()
 
     except requests.exceptions.RequestException as e:
-        print("Erreur lors de la création de la commande :", e)
+        print("🔥 EXCEPTION REQUEST:", str(e))
         return {
-            "error": "Impossible de créer la commande",
+            "error": "Connection error",
             "details": str(e)
         }

@@ -1,13 +1,20 @@
 def build_summary(cart: dict):
 
     lines = []
-
     total_items = 0
 
+    # 🔹 PRODUCTS
     for p in cart.get("products", []):
-        lines.append(f"- {p['quantity']} x {p['name']}")
+        line = f"- {p['quantity']} x {p['name']} ({p.get('size', 'M')})"
+
+        if p.get("extraSauces"):
+            sauces = ", ".join(p["extraSauces"])
+            line += f"\n   + Sauces: {sauces}"
+
+        lines.append(line)
         total_items += p["quantity"]
 
+    # 🔹 MENUS
     for m in cart.get("menus", []):
         lines.append(f"- {m['quantity']} x {m['name']}")
         total_items += m["quantity"]

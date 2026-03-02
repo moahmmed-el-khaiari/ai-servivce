@@ -1,3 +1,5 @@
+from multiprocessing import context
+
 import requests
 import json
 import re
@@ -5,23 +7,29 @@ from app.config import OPENROUTER_API_KEY, DEEPSEEK_MODEL, OPENROUTER_URL
 
 
 def clean_json_response(text: str):
-    """
-    Extract JSON block from LLM response safely
-    """
+
     try:
-        # Try direct load
-        return json.loads(text)
+        data = json.loads(text)
     except:
-        # Extract JSON between { }
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group())
+                data = json.loads(match.group())
             except:
-                pass
+                return {"products": [], "menus": []}
+        else:
+            return {"products": [], "menus": []}
 
-    return {"products": [], "menus": []}
+    # Sécuriser structure
+    data.setdefault("products", [])
+    data.setdefault("menus", [])
 
+    for p in data["products"]:
+        if not p.get("size") or p.get("size") not in ["S", "M", "L", "XL"]:
+            p["size"] = None
+        p.setdefault("extraSauces", [])
+
+    return data
 
 def extract_order_intent(message: str):
 
@@ -29,19 +37,34 @@ def extract_order_intent(message: str):
 You are a strict JSON extractor for restaurant orders.
 
 Rules:
-- If a product name contains multiple words (example: "flan tunus"), keep it as ONE single product.
-- If food item found → add it to products
-- If menu found → add it to menus
-- If nothing found → return empty arrays
-- Return ONLY JSON
-- No explanation
-- No text outside JSON
+- Keep product names exactly as spoken.
+- If a product name contains multiple words, keep it as ONE product.
+- If food item found → add it to products.
+- If menu found → add it to menus.
+- If user specifies size (S, M, L), include it.
+- If no size specified, set size to null.
+- If sauces mentioned, include them in extraSauces array.
+- If no sauces mentioned, use empty array.
+- Return ONLY valid JSON.
+- No explanation.
 
 Format:
 
 {{
-  "products": [{{"name": "string", "quantity": number}}],
-  "menus": [{{"name": "string", "quantity": number}}]
+  "products": [
+    {{
+      "name": "string",
+      "quantity": number,
+      "size": "S | M | L ",
+      "extraSauces": ["sauce name"]
+    }}
+  ],
+  "menus": [
+    {{
+      "name": "string",
+      "quantity": number
+    }}
+  ]
 }}
 
 Sentence:
@@ -66,7 +89,7 @@ Sentence:
             }
         ],
         "temperature": 0,
-        "max_tokens": 300
+        "max_tokens": 400
     }
 
     response = requests.post(
@@ -83,6 +106,7 @@ Sentence:
 
     return clean_json_response(content)
 def quick_extract(message: str):
+
     pattern = r"(\d+)\s+(.+)"
     match = re.match(pattern, message.strip())
 
@@ -91,8 +115,73 @@ def quick_extract(message: str):
         name = match.group(2).strip()
 
         return {
-            "products": [{"name": name, "quantity": quantity}],
+            "products": [{
+                "name": name,
+                "quantity": quantity,
+                "size": None,
+                "extraSauces": []
+            }],
             "menus": []
         }
 
     return None
+
+def generate_reply(context: dict) -> str:
+    """
+    Generate natural user-facing reply using DeepSeek.
+    The business logic is already decided by backend.
+    This function ONLY reformulates.
+    """
+
+    system_prompt = """
+You are a professional restaurant AI assistant.
+
+Important rules:
+- Never invent products
+- Never modify totals
+- Never change business data
+- Only reformulate naturally
+- Be polite and friendly
+- Keep responses concise
+"""
+
+    user_prompt = f"""
+Context data:
+{json.dumps(context, indent=2)}
+
+Generate a natural message to send to the customer.
+Only return the message text.
+No explanations.
+"""
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "temperature": 0.6,   # un peu de variation naturelle
+        "max_tokens": 200
+    }
+
+    try:
+        response = requests.post(
+            OPENROUTER_URL,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        response.raise_for_status()
+        data = response.json()
+
+        return data["choices"][0]["message"]["content"].strip()
+
+    except Exception as e:
+        print("LLM reply error:", e)
+        return context.get("fallback_message", "Merci pour votre commande.")

@@ -1,12 +1,24 @@
-def build_confirmation_text(resolved):
-   
-    text = "Vous souhaitez :\n"
+def build_confirmation_text(cart: dict):
 
-    for p in resolved["products"]:
-        text += f"- Produit ID {p['productId']} x{p['quantity']}\n"
+    lines = []
 
-    for m in resolved["menus"]:
-        text += f"- Menu ID {m['menuId']} x{m['quantity']}\n"
+    for p in cart.get("products", []):
+        line = f"- {p['quantity']} x {p['name']} ({p.get('size', 'M')})"
 
-    text += "\nConfirmez-vous ?"
+        if p.get("extraSauces"):
+            sauces = ", ".join(p["extraSauces"])
+            line += f"\n   + Sauces: {sauces}"
+
+        lines.append(line)
+
+    for m in cart.get("menus", []):
+        lines.append(f"- {m['quantity']} x {m['name']}")
+
+    if not lines:
+        return "Votre panier est vide."
+
+    text = "Voici votre commande :\n\n"
+    text += "\n".join(lines)
+    text += "\n\nConfirmez-vous votre commande ?"
+
     return text
