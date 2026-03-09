@@ -1,18 +1,11 @@
+from aiohttp import request
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import io
 import re
-
 from app.models.chat_models import ChatRequest, ChatResponse
-from app.state_machine.conversation_manager import (
-    get_session,
-    update_state,
-    add_to_cart,
-    clear_session,
-    set_draft,
-    set_customer_phone
-)
+from app.state_machine.conversation_manager import (get_session,update_state, add_to_cart,clear_session,set_draft, set_customer_phone)
 from app.state_machine.conversation_states import ConversationState
 from app.services.llm_service import extract_order_intent, generate_reply
 from app.services.summary_service import build_summary
@@ -21,31 +14,18 @@ from app.clients.order_client import create_order
 from app.services.stt_service import speech_to_text
 from app.services.tts_service import text_to_speech
 from app.clients.product_client import get_products_by_category
-
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"],)
 # =============================
 # Helpers
 # =============================
-
 def is_yes(message: str):
     return message.lower().strip() in ["oui", "yes", "ok", "d'accord"]
-
 def is_no(message: str):
     return message.lower().strip() in ["non", "no", "annuler"]
-
 def is_valid_phone(text: str):
     pattern = r"^\+?\d{9,15}$"
     return re.match(pattern, text.strip()) is not None
-
 def ai_reply(state: str, fallback: str, extra: dict = None):
     context = {
         "state": state,
@@ -55,10 +35,11 @@ def ai_reply(state: str, fallback: str, extra: dict = None):
         context.update(extra)
     return generate_reply(context)
 
+from app.routes.twilio_voice import router as voice_router
+app.include_router(voice_router)
 # =============================
 # VOICE
 # =============================
-
 @app.post("/voice-chat")
 async def voice_chat(file: UploadFile = File(...), session_id: str = ""):
     text = await speech_to_text(file)
@@ -69,11 +50,9 @@ async def voice_chat(file: UploadFile = File(...), session_id: str = ""):
         io.BytesIO(audio_bytes),
         media_type="audio/mpeg"
     )
-
 # =============================
 # CHAT
 # =============================
-
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
 
@@ -85,35 +64,64 @@ def chat(request: ChatRequest):
     # =========================
     if state == ConversationState.WELCOME:
 
-        update_state(request.session_id, ConversationState.CHOOSE_MODE)
+         # 🔥 On teste si le message contient une commande
+        parsed = extract_order_intent(request.message)
+
+        if parsed and (parsed.get("products") or parsed.get("menus")):
+            # 👉 On passe directement en ORDERING
+            update_state(request.session_id, ConversationState.ORDERING)
+            return chat(ChatRequest(
+                session_id=request.session_id,
+                message=request.message
+            ))
+
+        # Sinon on affiche message intelligent
+        update_state(request.session_id, ConversationState.MAIN_MENU)
 
         return ChatResponse(
-            reply="Bonjour 👋\n\nSouhaitez-vous :\n1️⃣ Commander directement (ex: 2 Margherita)\n2️⃣ Voir nos catégories ?"
+            reply=ai_reply(
+                "welcome_auto",
+                "Bonjour 👋\n\nSi vous connaissez déjà votre commande, indiquez-moi la quantité, le produit et la taille.\n\nSinon, vous pouvez me demander de voir le catalogue."
+            )
         )
     # =========================
     # chose mode
     # =========================
     if state == ConversationState.CHOOSE_MODE:
 
-        message = request.message.lower()
+        message = request.message.lower().strip()
 
-        # Si user veut voir catégories
-        if "cat" in message or "voir" in message:
+        # choix 1 → commande directe
+        if message == "1":
+            update_state(request.session_id, ConversationState.MAIN_MENU)
+            return ChatResponse(
+                    reply=ai_reply(
+                        "direct_order_selected",
+                        "Très bien 😊 Donnez-moi votre commande."
+                    )
+)
+        # choix 2 → catégories
+        if message == "2" or "cat" in message or "voir" in message:
             update_state(request.session_id, ConversationState.SELECT_CATEGORY)
 
             return ChatResponse(
-                reply="Voici nos catégories :\n- PIZZA\n- DRINK\n- DESSERT\n- MENU\n\nQuelle catégorie souhaitez-vous ?"
+                    reply=ai_reply(
+                        "show_categories",
+                        "Voici nos catégories : PIZZA, DRINK, DESSERT, MENU. Quelle catégorie souhaitez-vous ?",
+                        {
+                            "categories": ["PIZZA", "DRINK", "DESSERT", "MENU"]
+                        }
+                    )
+)
+
+       # sinon on redemande le choix proprement
+        return ChatResponse(
+            reply=ai_reply(
+                "choose_mode_again",
+                "Veuillez choisir : 1️⃣ Commander directement ou 2️⃣ Voir les catégories."
             )
-
-        # Sinon on suppose commande directe
-        update_state(request.session_id, ConversationState.MAIN_MENU)
-
-        # On relance ton système actuel
-        return chat(ChatRequest(
-            session_id=request.session_id,
-            message=request.message
-        ))
-    # =========================
+)
+    #=========================
     # SELECT CATEGORY
     # =========================
     if state == ConversationState.SELECT_CATEGORY:
@@ -123,7 +131,12 @@ def chat(request: ChatRequest):
         products = get_products_by_category(category)
 
         if not products:
-            return ChatResponse(reply="Catégorie invalide.")
+            return ChatResponse(
+            reply=ai_reply(
+                "invalid_category",
+                "Catégorie invalide. Choisissez parmi : PIZZA, DRINK, DESSERT, MENU."
+            )
+        )
 
         session["category_products"] = products
         update_state(request.session_id, ConversationState.SELECT_PRODUCT_FROM_CATEGORY)
@@ -131,73 +144,160 @@ def chat(request: ChatRequest):
         product_names = "\n".join([p["name"] for p in products])
 
         return ChatResponse(
-            reply=f"Produits disponibles en {category} :\n\n{product_names}\n\nQuel produit souhaitez-vous ?"
+            reply=ai_reply(
+                "show_products_by_category",
+                f"Produits disponibles en {category} : {product_names}. Quel produit souhaitez-vous ?",
+                {
+                    "category": category,
+                    "products": product_names
+                }
+            )
         )
-    # =========================
+    # ============================
     # SELECT PRODUCT FROM CATEGORY
-    # =========================
+    # ============================
     if state == ConversationState.SELECT_PRODUCT_FROM_CATEGORY:
 
-        product_name = request.message.lower()
+        product_name = request.message.lower().strip()
         products = session.get("category_products", [])
 
         product = next(
-            (p for p in products if p["name"].lower() in product_name),
+            (p for p in products if product_name in p["name"].lower()),
             None
         )
 
         if not product:
-            return ChatResponse(reply="Produit non trouvé.")
+            return ChatResponse(
+                reply=ai_reply(
+                    "product_not_found",
+                    "Produit non trouvé. Veuillez choisir dans la liste."
+                )
+            )
 
-        # On injecte dans ton système existant
+        session["selected_product_from_category"] = product
+        update_state(request.session_id, ConversationState.ASK_QUANTITY)
+
+        return ChatResponse(
+            reply=ai_reply(
+                "ask_quantity",
+                f"Combien de {product['name']} souhaitez-vous ?",
+                {"product_name": product["name"]}
+            )
+        )
+    #============================
+    # ASK QUANTITY
+    #============================
+    if state == ConversationState.ASK_QUANTITY:
+
+        try:
+            quantity = int(request.message.strip())
+            if quantity <= 0:
+                raise ValueError
+        except:
+            return ChatResponse(
+                    reply=ai_reply(
+                        "invalid_quantity",
+                        "Veuillez entrer une quantité valide (ex: 2)."
+                    )
+                )
+        product = session.get("selected_product_from_category")
+        if not product:
+                update_state(request.session_id, ConversationState.SELECT_CATEGORY)
+                return ChatResponse(reply=ai_reply(
+                                        "internal_error_category",
+                                        "Erreur interne. Recommençons par la catégorie."
+                                    ))
+
         update_state(request.session_id, ConversationState.ORDERING)
 
-        # On reformate message comme si user l'avait tapé
         return chat(ChatRequest(
             session_id=request.session_id,
-            message=f"1 {product['name']}"
+            message=f"{quantity} {product['name']}"
         ))
     # =========================
     # ORDERING
     # =========================
     if state in [ConversationState.MAIN_MENU, ConversationState.ORDERING]:
 
+        message = request.message.lower().strip()
+
+        # 🔥 Détection intelligente catalogue / catégorie
+        category_keywords = ["catalogue", "menu", "voir", "categorie", "catégorie", "category"]
+        category_values = ["pizza", "drink", "boisson", "dessert", "menu"]
+
+        # Si user parle du catalogue OU mentionne une catégorie
+        if any(word in message for word in category_keywords) or \
+        (not any(char.isdigit() for char in message) and
+            any(cat in message for cat in category_values)):
+
+            update_state(request.session_id, ConversationState.SELECT_CATEGORY)
+
+            return ChatResponse(
+                reply=ai_reply(
+                    "show_categories",
+                    "Voici nos catégories : PIZZA, DRINK, DESSERT, MENU. Quelle catégorie souhaitez-vous ?",
+                    {
+                        "categories": ["PIZZA", "DRINK", "DESSERT", "MENU"]
+                    }
+                )
+            )
+
+        # 🔥 2️⃣ Sinon on traite comme commande directe
         parsed = extract_order_intent(request.message)
 
         if not parsed or (not parsed.get("products") and not parsed.get("menus")):
             return ChatResponse(
                 reply=ai_reply(
                     "ordering_error",
-                    "Je n'ai pas compris votre commande."
+                    "Je n'ai pas compris votre commande. Indiquez la quantité, le produit et la taille."
                 )
             )
 
-        # 🔥 Gestion tailles intelligentes
+        missing_sizes = []
+        validated_products = []
+
+        # 🔥 Gestion tailles multiples
         for product in parsed.get("products", []):
 
             product_name = product["name"].lower()
 
-            # 🍰 Dessert → toujours taille S
+            # 🍰 Dessert → taille automatique
             if "glac" in product_name or "dessert" in product_name:
                 product["size"] = "S"
+                validated_products.append(product)
                 continue
 
-            # 🍕🥤 Pizza / Boisson → taille obligatoire
+            # 🍕🥤 Taille obligatoire
             if not product.get("size") or product.get("size") in ["None", None]:
-                session["previous_state"] = state
-                session["pending_size_product"] = product
-                update_state(request.session_id, ConversationState.ASK_SIZE)
+                missing_sizes.append(product)
+            else:
+                validated_products.append(product)
 
-                return ChatResponse(
-                    reply=ai_reply(
-                        "ask_size",
-                        f"Quelle taille souhaitez-vous pour {product['name']} ? (S, M, L, XL)"
-                    )
+        # 🔴 S'il manque des tailles
+        if missing_sizes:
+            session["pending_size_products"] = missing_sizes
+            session["validated_products"] = validated_products
+            session["previous_state"] = state
+
+            update_state(request.session_id, ConversationState.ASK_SIZE)
+
+            first_product = missing_sizes[0]
+
+            return ChatResponse(
+                reply=ai_reply(
+                    "ask_size",
+                    f"Quelle taille souhaitez-vous pour {first_product['name']} ? (S, M, L, XL)"
                 )
+            )
 
-        # 🔥 Validation backend après tailles OK
+        # 🔥 Tous les produits ont taille
+        full_order = {
+            "products": validated_products,
+            "menus": parsed.get("menus", [])
+        }
+
         mapped_payload, not_found = map_names_to_ids(
-            parsed,
+            full_order,
             session.get("customerPhone")
         )
 
@@ -217,7 +317,13 @@ def chat(request: ChatRequest):
                 )
             )
 
-        add_to_cart(request.session_id, parsed)
+        # 🔥 Ajout sécurisé (évite écrasement)
+        for product in validated_products:
+            add_to_cart(request.session_id, {
+                "products": [product],
+                "menus": []
+            })
+
         update_state(request.session_id, ConversationState.DRINK_OFFER)
 
         return ChatResponse(
@@ -226,7 +332,6 @@ def chat(request: ChatRequest):
                 "Souhaitez-vous ajouter une boisson ?"
             )
         )
-
     # =========================
     # DRINK OFFER
     # =========================
@@ -272,24 +377,44 @@ def chat(request: ChatRequest):
                 )
             )
 
-        # 🔥 Gestion tailles boissons
+        missing_sizes = []
+        validated_products = []
+
+        # 🔥 Vérification des tailles pour chaque produit
         for product in parsed.get("products", []):
 
             if not product.get("size") or product.get("size") in ["None", None]:
-                session["previous_state"] = state
-                session["pending_size_product"] = product
-                update_state(request.session_id, ConversationState.ASK_SIZE)
+                missing_sizes.append(product)
+            else:
+                validated_products.append(product)
 
-                return ChatResponse(
-                    reply=ai_reply(
-                        "ask_size",
-                        f"Quelle taille souhaitez-vous pour {product['name']} ? (S, M, L, XL)"
-                    )
+        # 🔴 S'il manque des tailles
+        if missing_sizes:
+
+            session["pending_size_products"] = missing_sizes
+            session["validated_products"] = validated_products
+            session["previous_state"] = ConversationState.DRINK_SELECTION
+
+            update_state(request.session_id, ConversationState.ASK_SIZE)
+
+            first_product = missing_sizes[0]
+
+            return ChatResponse(
+                reply=ai_reply(
+                    "ask_size",
+                    f"Quelle taille souhaitez-vous pour {first_product['name']} ? (S, M, L, XL)"
                 )
+            )
 
-        # 🔥 Validation backend après taille OK
+        # 🔥 Tous les produits ont une taille → validation backend
+
+        full_order = {
+            "products": validated_products,
+            "menus": []
+        }
+
         mapped_payload, not_found = map_names_to_ids(
-            parsed,
+            full_order,
             session.get("customerPhone")
         )
 
@@ -301,7 +426,7 @@ def chat(request: ChatRequest):
                 )
             )
 
-        add_to_cart(request.session_id, parsed)
+        add_to_cart(request.session_id, full_order)
         update_state(request.session_id, ConversationState.DESSERT_OFFER)
 
         return ChatResponse(
@@ -387,7 +512,6 @@ def chat(request: ChatRequest):
     if state == ConversationState.ASK_SIZE:
 
         message_upper = request.message.upper()
-
         match = re.search(r"\b(S|M|L|XL)\b", message_upper)
 
         if not match:
@@ -407,42 +531,66 @@ def chat(request: ChatRequest):
         else:
             size = match.group(1)
 
-        product = session.get("pending_size_product")
+        pending_products = session.get("pending_size_products", [])
+        validated_products = session.get("validated_products", [])
 
-        if not product:
+        if not pending_products:
             update_state(request.session_id, ConversationState.ORDERING)
-            return ChatResponse(reply="Erreur interne.")
+            return ChatResponse(
+                reply=ai_reply("internal_error", "Erreur interne.")
+            )
 
-        product["size"] = size
+        # 🔥 Prendre le premier produit sans taille
+        current_product = pending_products.pop(0)
+        current_product["size"] = size
+        validated_products.append(current_product)
 
-        session.pop("pending_size_product", None)
+        # 🔁 S'il reste encore des produits sans taille
+        if pending_products:
+            session["pending_size_products"] = pending_products
+            session["validated_products"] = validated_products
 
-        add_to_cart(request.session_id, {"products": [product]})
+            next_product = pending_products[0]
 
-        # 🔥 LOGIQUE CORRIGÉE ICI
+            return ChatResponse(
+                reply=ai_reply(
+                    "ask_size",
+                    f"Quelle taille souhaitez-vous pour {next_product['name']} ? (S, M, L, XL)"
+                )
+            )
+
+        # ✅ Tous les produits ont une taille → on les ajoute UN PAR UN
+        for product in validated_products:
+            add_to_cart(request.session_id, {
+                "products": [product],
+                "menus": []
+            })
+
+        # Nettoyage session
+        session.pop("pending_size_products", None)
+        session.pop("validated_products", None)
 
         previous_state = session.get("previous_state")
 
+        # 🔥 Retour au bon flow
         if previous_state == ConversationState.DRINK_SELECTION:
             update_state(request.session_id, ConversationState.DESSERT_OFFER)
 
             return ChatResponse(
                 reply=ai_reply(
                     "drink_added",
-                    f"Taille {size} ajoutée. Souhaitez-vous un dessert ?"
+                    "Boissons ajoutées. Souhaitez-vous un dessert ?"
                 )
             )
-
         else:
-            # cas pizza
             update_state(request.session_id, ConversationState.DRINK_OFFER)
 
             return ChatResponse(
                 reply=ai_reply(
-                    "size_added",
-                    f"Taille {size} ajoutée. Souhaitez-vous ajouter une boisson ?"
+                    "size_completed",
+                    "Tailles enregistrées. Souhaitez-vous ajouter une boisson ?"
                 )
-            )
+        )
     # =========================
     # ASK ADD MORE
     # =========================
@@ -450,13 +598,23 @@ def chat(request: ChatRequest):
 
         if is_yes(request.message):
             update_state(request.session_id, ConversationState.SELECT_CATEGORY)
-            return ChatResponse(reply="Quelle catégorie souhaitez-vous ?")
+            return ChatResponse(
+            reply=ai_reply(
+                "ask_category",
+                "Quelle catégorie souhaitez-vous ?"
+            ))
 
         if is_no(request.message):
             update_state(request.session_id, ConversationState.ASK_PHONE)
-            return ChatResponse(reply="Veuillez saisir votre numéro de téléphone.")
+            return ChatResponse(reply=ai_reply(
+        "ask_phone",
+        "Veuillez saisir votre numéro de téléphone."
+    ))
 
-        return ChatResponse(reply="Veuillez répondre par oui ou non.")
+        return ChatResponse(reply=ai_reply(
+        "yes_no_required",
+        "Veuillez répondre par oui ou non."
+    ))
 
     # =========================
     # ASK PHONE

@@ -1,14 +1,16 @@
 import requests
 from app.config import ELEVENLABS_API_KEY
 
-def text_to_speech(text: str):
+ELEVENLABS_VOICE_ID = "raMcNf2S8wCmuaBcyI6E"
 
-    idvoice="raMcNf2S8wCmuaBcyI6E" 
-     # ID de la voix à utiliser (ex: "Rachel" en anglais)
-    idvoice2="21m00Tcm4TlvDq8ikWAM" # ID d'une autre voix (ex: "Domi" en anglais)
+def text_to_speech(text: str) -> bytes:
+    """
+    TTS via ElevenLabs.
+    Si le compte ElevenLabs est bloqué → retourne b"" 
+    → twilio_voice.py utilisera automatiquement la voix alice comme fallback
+    """
 
-
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{idvoice}"
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
 
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
@@ -17,9 +19,28 @@ def text_to_speech(text: str):
 
     data = {
         "text": text,
-        "model_id": "eleven_multilingual_v2"
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        }
     }
 
-    response = requests.post(url, json=data, headers=headers)
+    try:
+        print(f"[TTS] Génération audio...")
+        response = requests.post(url, json=data, headers=headers, timeout=30)
 
-    return response.content
+        if response.status_code == 401:
+            print(f"[TTS] ⚠️ Compte ElevenLabs bloqué → fallback voix Twilio alice")
+            return b""
+
+        if response.status_code != 200:
+            print(f"[TTS] Erreur {response.status_code} → fallback voix Twilio alice")
+            return b""
+
+        print(f"[TTS] ✅ Audio généré : {len(response.content)} bytes")
+        return response.content
+
+    except Exception as e:
+        print(f"[TTS] Exception : {e} → fallback voix Twilio alice")
+        return b""
