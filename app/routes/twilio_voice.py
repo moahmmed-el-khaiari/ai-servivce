@@ -5,14 +5,14 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import Response, FileResponse
 from twilio.twiml.voice_response import VoiceResponse
-
+from app.config import NGROK_BASE_URL
 from app.services.stt_service import speech_to_text
 from app.services.tts_service import text_to_speech
 from app.models.chat_models import ChatRequest
 
 router = APIRouter()
 
-NGROK_BASE_URL = os.getenv("NGROK_BASE_URL", "https://c6c4-161-178-132-46.ngrok-free.app")
+
 
 AUDIO_DIR = Path("audio_files")
 AUDIO_DIR.mkdir(exist_ok=True)
@@ -109,7 +109,7 @@ async def voice_entry(request: Request):
     audio_url = f"{NGROK_BASE_URL}/audio/{filename}"
     resp = VoiceResponse()
     resp.play(audio_url)
-    resp.record(max_length=10, action=f"{NGROK_BASE_URL}/voice-entry", play_beep=True, transcribe=False)
+    resp.record(max_length=20, action=f"{NGROK_BASE_URL}/voice-entry", play_beep=True, transcribe=False)
     return Response(str(resp), media_type="application/xml")
 
 

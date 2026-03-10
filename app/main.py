@@ -14,15 +14,27 @@ from app.clients.order_client import create_order
 from app.services.stt_service import speech_to_text
 from app.services.tts_service import text_to_speech
 from app.clients.product_client import get_products_by_category
+from app.routes.twilio_voice_new import router as voice_router
 app = FastAPI()
 app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_credentials=True,allow_methods=["*"],allow_headers=["*"],)
 # =============================
 # Helpers
 # =============================
-def is_yes(message: str):
-    return message.lower().strip() in ["oui", "yes", "ok", "d'accord"]
-def is_no(message: str):
-    return message.lower().strip() in ["non", "no", "annuler"]
+def clean_voice_input(message: str) -> str:
+    return re.sub(r'[^\w\s]', '', message).lower().strip()
+def is_yes(message: str) -> bool:
+    msg = clean_voice_input(message)
+    return msg in [
+        "oui", "yes", "ok", "d accord", "bien sur",
+        "affirmatif", "absolument", "voila", "ouais",
+        "oui oui", "tout a fait"
+    ]
+def is_no(message: str) -> bool:
+    msg = clean_voice_input(message)
+    return msg in [
+        "non", "no", "annuler", "nope", "nan",
+        "non merci", "pas du tout", "negatif"
+    ]
 def is_valid_phone(text: str):
     pattern = r"^\+?\d{9,15}$"
     return re.match(pattern, text.strip()) is not None
@@ -35,7 +47,7 @@ def ai_reply(state: str, fallback: str, extra: dict = None):
         context.update(extra)
     return generate_reply(context)
 
-from app.routes.twilio_voice import router as voice_router
+
 app.include_router(voice_router)
 # =============================
 # VOICE
@@ -451,12 +463,11 @@ def chat(request: ChatRequest):
 
         if is_no(request.message):
             update_state(request.session_id, ConversationState.ASK_PHONE)
-            return ChatResponse(
-                reply=ai_reply(
-                    "ask_phone",
-                    "Veuillez saisir votre numéro de téléphone."
-                )
-            )
+            return chat(ChatRequest(
+                        session_id=request.session_id,
+                        message="__auto__",
+                        phone_override=request.phone_override
+                    ))
 
         return ChatResponse(
             reply=ai_reply(
@@ -500,12 +511,11 @@ def chat(request: ChatRequest):
         add_to_cart(request.session_id, parsed)
         update_state(request.session_id, ConversationState.ASK_PHONE)
 
-        return ChatResponse(
-            reply=ai_reply(
-                "ask_phone",
-                "Merci. Veuillez saisir votre numéro de téléphone."
-            )
-        )
+        return chat(ChatRequest(
+        session_id=request.session_id,
+        message="__auto__",
+        phone_override=request.phone_override
+    ))
     # =========================
     # ASK SIZE
     # =========================
@@ -606,9 +616,10 @@ def chat(request: ChatRequest):
 
         if is_no(request.message):
             update_state(request.session_id, ConversationState.ASK_PHONE)
-            return ChatResponse(reply=ai_reply(
-        "ask_phone",
-        "Veuillez saisir votre numéro de téléphone."
+            return chat(ChatRequest(
+        session_id=request.session_id,
+        message="__auto__",
+        phone_override=request.phone_override
     ))
 
         return ChatResponse(reply=ai_reply(
@@ -621,7 +632,9 @@ def chat(request: ChatRequest):
     # =========================
     if state == ConversationState.ASK_PHONE:
 
-        if not is_valid_phone(request.message):
+        phone = request.phone_override or request.message
+
+        if not is_valid_phone(phone):
             return ChatResponse(
                 reply=ai_reply(
                     "invalid_phone",
@@ -629,11 +642,11 @@ def chat(request: ChatRequest):
                 )
             )
 
-        set_customer_phone(request.session_id, request.message)
+        set_customer_phone(request.session_id, phone)
 
         draft_payload, not_found = map_names_to_ids(
             session["cart"],
-            request.message
+            phone
         )
 
         if not draft_payload["products"] and not draft_payload["menus"]:

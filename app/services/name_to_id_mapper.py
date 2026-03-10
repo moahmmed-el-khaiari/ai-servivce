@@ -1,6 +1,6 @@
 import requests
 from app.config import PRODUCT_SERVICE_URL, MENU_SERVICE_URL, SAUCE_SERVICE_URL
-
+from app.services.product_matcher import smart_match
 
 # ============================
 # 🔹 SAFE REQUEST
@@ -22,39 +22,51 @@ def resolve_product_by_name(name: str):
 
     data = safe_get(
         f"{PRODUCT_SERVICE_URL}/search",
-        {"name": name}
+        {"name": name.split()[0]}
     )
 
     if not data:
         return None
 
-    if isinstance(data, list) and len(data) > 0:
-        return data[0]
-
     if isinstance(data, dict):
         return data
 
+    best = smart_match(name, data)
+
+    if not best:
+        return None
+
+    for product in data:
+        if product["name"].lower() == best.lower():
+            return product
+
     return None
-
-
 # ============================
 # 🔹 MENU NAME → ID
 # ============================
 def resolve_menu_by_name(name: str):
 
+   # 1️⃣ chercher large
     data = safe_get(
         f"{MENU_SERVICE_URL}/search",
-        {"name": name}
+        {"name": name.split()[0]}
     )
 
     if not data:
         return None
 
-    if isinstance(data, list) and len(data) > 0:
-        return data[0]
-
     if isinstance(data, dict):
         return data
+
+    # 2️⃣ fuzzy matching
+    best = smart_match(name, data)
+
+    if not best:
+        return None
+
+    for product in data:
+        if product["name"] == best:
+            return product
 
     return None
 

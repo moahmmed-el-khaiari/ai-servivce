@@ -36,6 +36,13 @@ def extract_order_intent(message: str):
     prompt = f"""
 You are a strict JSON extractor for restaurant orders.
 
+SIZE MAPPING RULES (very important):
+- petit / petite / small / taille S → "S"
+- moyen / moyenne / medium / taille M / taille moyenne → "M"
+- grand / grande / large / taille L / taille grande → "L"
+- très grand / tres grand / extra large / XL / taille XL → "XL"
+- If no size mentioned → null
+
 Rules:
 - Keep product names exactly as spoken.
 - If a product name contains multiple words, keep it as ONE product.
@@ -66,6 +73,13 @@ Format:
     }}
   ]
 }}
+Examples:
+- "je voudrais un café de taille moyenne" → {{"products": [{{"name": "café", "quantity": 1, "size": "M", "extraSauces": []}}], "menus": []}}
+- "un café moyen" → {{"products": [{{"name": "café", "quantity": 1, "size": "M", "extraSauces": []}}], "menus": []}}
+- "deux pizzas grandes" → {{"products": [{{"name": "pizza", "quantity": 2, "size": "L", "extraSauces": []}}], "menus": []}}
+- "une pizza petite" → {{"products": [{{"name": "pizza", "quantity": 1, "size": "S", "extraSauces": []}}], "menus": []}}
+- "je veux un café" → {{"products": [{{"name": "café", "quantity": 1, "size": null, "extraSauces": []}}], "menus": []}}
+
 
 Sentence:
 {message}
@@ -89,7 +103,7 @@ Sentence:
             }
         ],
         "temperature": 0,
-        "max_tokens": 400
+        "max_tokens": 150
     }
 
     response = requests.post(
@@ -191,7 +205,7 @@ No explanations.
             {"role": "user", "content": user_prompt}
         ],
         "temperature": 0.6,   # un peu de variation naturelle
-        "max_tokens": 200
+        "max_tokens": 150
     }
 
     try:

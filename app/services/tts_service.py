@@ -1,7 +1,7 @@
 import requests
 from app.config import ELEVENLABS_API_KEY
 
-ELEVENLABS_VOICE_ID = "raMcNf2S8wCmuaBcyI6E"
+ELEVENLABS_VOICE_ID = "XB0fDUnXU5powFXDhCwa"
 
 def text_to_speech(text: str) -> bytes:
     """
@@ -18,13 +18,14 @@ def text_to_speech(text: str) -> bytes:
     }
 
     data = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75
-        }
+    "text": text,
+    "model_id": "eleven_turbo_v2_5",
+    "language_code": "fr",          # ✅ force le français
+    "voice_settings": {
+        "stability": 0.5,
+        "similarity_boost": 0.75
     }
+}
 
     try:
         print(f"[TTS] Génération audio...")

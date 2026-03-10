@@ -1,19 +1,30 @@
 import requests
-import time
-from app.config import ASSEMBLYAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+from app.config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, GROQ_API_KEY
 
-UPLOAD_URL     = "https://api.assemblyai.com/v2/upload"
-TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
+# ✅ Phrases parasites connues
+NOISE_PHRASES = [
+    "amara", "sous-titres", "communauté", "transcription automatique",
+    "subtitles", "caption", "translate", "youtube", "creative commons",
+    "droits réservés", "all rights reserved", "music", "musique"
+]
+
+VALID_SHORT = ["s", "m", "l", "xl", "oui", "non", "ok", "nan", "ouais"]
+
+def is_noise(text: str) -> bool:
+    cleaned = text.strip().lower().rstrip('.')
+    if cleaned in VALID_SHORT:
+        return False
+    if len(cleaned) < 3:
+        return True
+    if any(phrase in cleaned for phrase in NOISE_PHRASES):
+        return True
+    return False
+
 
 def speech_to_text(audio_url: str) -> str:
 
-    headers_assembly = {
-        "authorization": ASSEMBLYAI_API_KEY,
-        "content-type": "application/json"
-    }
-
-    # ÉTAPE 1 : Télécharger l'audio depuis Twilio avec auth
-    print(f"[STT] Téléchargement audio Twilio...")
+    # ÉTAPE 1 : Télécharger audio depuis Twilio
+    print("[STT] Téléchargement audio Twilio...")
     audio_response = requests.get(
         audio_url,
         auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
@@ -24,64 +35,53 @@ def speech_to_text(audio_url: str) -> str:
         print(f"[STT] Erreur téléchargement : {audio_response.status_code}")
         return ""
 
-    print(f"[STT] Audio téléchargé : {len(audio_response.content)} bytes")
+    audio_size = len(audio_response.content)
+    print(f"[STT] Audio téléchargé : {audio_size} bytes")
 
-    # ÉTAPE 2 : Upload vers AssemblyAI
-    print("[STT] Upload vers AssemblyAI...")
-    upload_response = requests.post(
-        UPLOAD_URL,
-        headers={"authorization": ASSEMBLYAI_API_KEY},
-        data=audio_response.content,
-        timeout=30
-    )
-
-    if upload_response.status_code != 200:
-        print(f"[STT] Erreur upload : {upload_response.status_code}")
+    if audio_size < 3000:
+        print(f"[STT] Audio trop court ({audio_size} bytes) — ignoré")
         return ""
 
-    upload_url = upload_response.json().get("upload_url")
-    print(f"[STT] Upload OK")
-
-    # ÉTAPE 3 : Créer la transcription
-    transcript_response = requests.post(
-        TRANSCRIPT_URL,
-        headers=headers_assembly,
-        json={
-            "audio_url": upload_url,
-            "language_code": "fr",
-            "speech_models": ["universal-2"]   # ✅ valeur correcte
-        },
-        timeout=15
-    )
-
-    if transcript_response.status_code != 200:
-        print(f"[STT] Erreur transcript : {transcript_response.status_code} — {transcript_response.text}")
+    # ÉTAPE 2 : Envoyer à Groq Whisper
+    print("[STT] Envoi à Groq Whisper...")
+    try:
+        response = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}"
+            },
+            files={
+                "file": ("audio.mp3", audio_response.content, "audio/mpeg")
+            },
+            data={
+                "model": "whisper-large-v3",
+                "language": "fr",
+                # ✅ Prompt guide Whisper vers vocabulaire restaurant
+                "prompt": (
+                    "commande restaurant savoria. "
+                    "pizza cafe boisson dessert menu. "
+                    "petit moyen grand tres grand. "
+                    "oui non confirmer annuler."
+                ),
+                "response_format": "json",
+                "temperature": 0
+            },
+            timeout=30
+        )
+    except Exception as e:
+        print(f"[STT] Erreur réseau Groq : {e}")
         return ""
 
-    transcript_id = transcript_response.json().get("id")
-    print(f"[STT] Transcript ID : {transcript_id}")
+    if response.status_code != 200:
+        print(f"[STT] Erreur Groq : {response.status_code} — {response.text}")
+        return ""
 
-    # ÉTAPE 4 : Polling
-    for attempt in range(20):
-        time.sleep(3)
+    text = response.json().get("text", "").strip()
 
-        poll = requests.get(
-            f"{TRANSCRIPT_URL}/{transcript_id}",
-            headers=headers_assembly,
-            timeout=10
-        ).json()
+    # Filtre bruit
+    if is_noise(text):
+        print(f"[STT] Bruit détecté — ignoré : '{text}'")
+        return ""
 
-        status = poll.get("status")
-        print(f"[STT] Status ({attempt+1}/20): {status}")
-
-        if status == "completed":
-            text = poll.get("text", "")
-            print(f"[STT] ✅ Résultat : '{text}'")
-            return text
-
-        if status == "error":
-            print(f"[STT] ❌ Erreur : {poll.get('error')}")
-            return ""
-
-    print("[STT] Timeout")
-    return ""
+    print(f"[STT] ✅ Résultat : '{text}'")
+    return text
