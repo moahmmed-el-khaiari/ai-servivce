@@ -1,15 +1,9 @@
 import requests
 from app.config import ELEVENLABS_API_KEY
 
-ELEVENLABS_VOICE_ID = "XB0fDUnXU5powFXDhCwa"
+ELEVENLABS_VOICE_ID = "XB0fDUnXU5powFXDhCwa"  # Charlotte FR
 
 def text_to_speech(text: str) -> bytes:
-    """
-    TTS via ElevenLabs.
-    Si le compte ElevenLabs est bloqué → retourne b"" 
-    → twilio_voice.py utilisera automatiquement la voix alice comme fallback
-    """
-
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
 
     headers = {
@@ -18,30 +12,32 @@ def text_to_speech(text: str) -> bytes:
     }
 
     data = {
-    "text": text,
-    "model_id": "eleven_turbo_v2_5",
-    "language_code": "fr",          # ✅ force le français
-    "voice_settings": {
-        "stability": 0.5,
-        "similarity_boost": 0.75
+        "text": text,
+        "model_id": "eleven_turbo_v2_5",   # ✅ modèle le plus rapide
+        "language_code": "fr",
+        "voice_settings": {
+            "stability": 0.35,             # ✅ moins stable = plus naturel/humain
+            "similarity_boost": 0.75,
+            "style": 0.25,                 # ✅ un peu d'expressivité
+            "use_speaker_boost": True,
+            "speed": 1.15                  # ✅ légèrement plus rapide qu'humain normal
+        }
     }
-}
 
     try:
-        print(f"[TTS] Génération audio...")
-        response = requests.post(url, json=data, headers=headers, timeout=30)
+        print(f"[TTS] '{text[:60]}...' " if len(text) > 60 else f"[TTS] '{text}'")
+        response = requests.post(url, json=data, headers=headers, timeout=15)
 
         if response.status_code == 401:
-            print(f"[TTS] ⚠️ Compte ElevenLabs bloqué → fallback voix Twilio alice")
+            print(f"[TTS] ⚠️ Compte ElevenLabs bloqué → fallback alice")
             return b""
-
         if response.status_code != 200:
-            print(f"[TTS] Erreur {response.status_code} → fallback voix Twilio alice")
+            print(f"[TTS] Erreur {response.status_code} → fallback alice")
             return b""
 
-        print(f"[TTS] ✅ Audio généré : {len(response.content)} bytes")
+        print(f"[TTS] ✅ {len(response.content)} bytes")
         return response.content
 
     except Exception as e:
-        print(f"[TTS] Exception : {e} → fallback voix Twilio alice")
+        print(f"[TTS] Exception : {e} → fallback alice")
         return b""
