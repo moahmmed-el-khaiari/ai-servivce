@@ -6,14 +6,16 @@ def get_session(session_id: str):
 
     if session_id not in sessions:
         sessions[session_id] = {
-            "state": ConversationState.WELCOME,   # ✅ Enum correct
-            "customerPhone": None,               # 🔥 nouveau
+            "state": ConversationState.WELCOME,
+            "customerPhone": None,
             "cart": {
                 "products": [],
                 "menus": []
             },
-            "draft_order": None,                 # 🔥 nouveau
-            "awaiting_confirmation": False       # 🔥 nouveau
+            "draft_order": None,
+            "awaiting_confirmation": False,
+            "global_retries": 0,          # ✅ FIX #9 — compteur retries pour mode dégradé
+            "ordering_retries": 0,        # ✅ existant — compteur spécifique ORDERING
         }
 
     return sessions[session_id]

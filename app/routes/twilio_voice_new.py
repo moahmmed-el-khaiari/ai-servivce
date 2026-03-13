@@ -93,7 +93,7 @@ def _cleanup_audio_files():
         except Exception:
             pass
     if deleted:
-        print(f"[Cleanup] 🗑️  {deleted} fichier(s) audio supprimé(s)")
+        print(f"[Cleanup] {deleted} fichier(s) audio supprimé(s)")
 
 
 # =============================
@@ -154,6 +154,9 @@ async def media_stream(ws: WebSocket):
     stream_sid      = None
     speech_needed   = int(MIN_SPEECH_MS / CHUNK_MS)  # 10 chunks
 
+    # ✅ FIX #10 — Lock pour empêcher le traitement parallèle du même audio
+    processing_lock = asyncio.Lock()
+
     async def send_audio_to_call(text: str):
         nonlocal is_processing
 
@@ -177,7 +180,6 @@ async def media_stream(ws: WebSocket):
             "bonne journ",        # "journée", "journee"
             "veuillez rappeler",
             "lien par sms",       # fin après envoi lien
-            "bonne journ",
         ]
 
         if audio_bytes:
@@ -189,7 +191,7 @@ async def media_stream(ws: WebSocket):
 
         if any(p in reply_normalized for p in END_PHRASES):
             resp.hangup()
-            print("[Voice] 📞 Hangup")
+            print("[Voice] Hangup")
         else:
             connect = Connect()
             s = connect.stream(url=f"wss://{NGROK_BASE_URL.replace('https://', '')}/media-stream")
@@ -207,7 +209,7 @@ async def media_stream(ws: WebSocket):
             print(f"[PIPELINE] CALL : {time.time()-t0:.2f}s — appel mis à jour ✅")
         except Exception as e:
             if "21220" in str(e):
-                print("[Voice] ⚠️ Appel terminé — ignoré")
+                print("[Voice] Appel terminé — ignoré")
             else:
                 print(f"[Voice] ❌ {e}")
 
@@ -215,41 +217,49 @@ async def media_stream(ws: WebSocket):
 
     async def process_speech(pcm_data: bytes):
         nonlocal is_processing
-        t_total = time.time()
-        print(f"\n{'─'*40}")
-        print(f"[PIPELINE] Début — {len(pcm_data)} bytes PCM")
 
-        try:
-            t0 = time.time()
-            wav_bytes  = pcm_to_wav(pcm_data, SAMPLE_RATE)
-            transcript = await groq_transcribe_pcm(wav_bytes)
-            print(f"[PIPELINE] STT  : {time.time()-t0:.2f}s — '{transcript}'")
-
-            if not transcript or len(transcript.strip()) < 2:
-                print("[STT] Vide — ignoré")
-                is_processing = False
-                return
-
-            t0 = time.time()
-            reply_text = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: handle_voice_order(
-                    session_id=caller_phone,
-                    message=transcript,
-                    phone_override=caller_phone
-                )
-            )
-            print(f"[PIPELINE] LLM  : {time.time()-t0:.2f}s — '{reply_text[:60]}'")
-
-            await send_audio_to_call(reply_text)
-
-            print(f"[PIPELINE] TOTAL: {time.time()-t_total:.2f}s")
-            print(f"{'─'*40}\n")
-
-        except Exception as e:
-            print(f"[Process] ❌ {e}")
-            await send_audio_to_call("Desole, une erreur est survenue. Veuillez repeter.")
+        # ✅ FIX #10 — Lock pour empêcher les traitements parallèles
+        if processing_lock.locked():
+            print("[PIPELINE] Déjà en cours de traitement — ignoré")
             is_processing = False
+            return
+
+        async with processing_lock:
+            t_total = time.time()
+            print(f"\n{'─'*40}")
+            print(f"[PIPELINE] Début — {len(pcm_data)} bytes PCM")
+
+            try:
+                t0 = time.time()
+                wav_bytes  = pcm_to_wav(pcm_data, SAMPLE_RATE)
+                transcript = await groq_transcribe_pcm(wav_bytes)
+                print(f"[PIPELINE] STT  : {time.time()-t0:.2f}s — '{transcript}'")
+
+                if not transcript or len(transcript.strip()) < 2:
+                    print("[STT] Vide — ignoré")
+                    is_processing = False
+                    return
+
+                t0 = time.time()
+                reply_text = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: handle_voice_order(
+                        session_id=caller_phone,
+                        message=transcript,
+                        phone_override=caller_phone
+                    )
+                )
+                print(f"[PIPELINE] LLM  : {time.time()-t0:.2f}s — '{reply_text[:60]}'")
+
+                await send_audio_to_call(reply_text)
+
+                print(f"[PIPELINE] TOTAL: {time.time()-t_total:.2f}s")
+                print(f"{'─'*40}\n")
+
+            except Exception as e:
+                print(f"[Process] ❌ {e}")
+                await send_audio_to_call("Desole, une erreur est survenue. Veuillez repeter.")
+                is_processing = False
 
     try:
         while True:
@@ -281,7 +291,7 @@ async def media_stream(ws: WebSocket):
                     speech_chunks += 1
                     if not is_speaking_vad:
                         is_speaking_vad = True
-                        print(f"[VAD] 🎤 Parole (rms={rms:.0f})")
+                        print(f"[VAD] Parole (rms={rms:.0f})")
                 else:
                     if is_speaking_vad:
                         silence_chunks += 1

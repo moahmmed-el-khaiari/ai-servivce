@@ -1,37 +1,75 @@
-def build_summary(cart: dict):
+# =============================
+# Format naturel pour TTS vocal
+# =============================
 
-    lines = []
-    total_items = 0
+SIZE_LABELS = {
+    "S":  "petit",
+    "M":  "moyen",
+    "L":  "grand",
+    "XL": "très grand",
+}
 
-    # 🔹 PRODUCTS
+# Produits féminins — "une pizza", "une eau"
+FEMININE = ["pizza", "eau", "limonade", "bière", "boisson", "tarte", "crème"]
+
+def article(qty: int, name: str) -> str:
+    """Retourne 'un' ou 'une' selon le produit, ou le chiffre si > 1"""
+    if qty > 1:
+        return str(qty)
+    name_lower = name.lower()
+    if any(f in name_lower for f in FEMININE):
+        return "une"
+    return "un"
+
+def size_agree(size_label: str, name: str) -> str:
+    """Accorde la taille avec le produit féminin"""
+    name_lower = name.lower()
+    is_fem = any(f in name_lower for f in FEMININE)
+    agree = {
+        "petit":     "petite"     if is_fem else "petit",
+        "moyen":     "moyenne"    if is_fem else "moyen",
+        "grand":     "grande"     if is_fem else "grand",
+        "très grand":"très grande" if is_fem else "très grand",
+    }
+    return agree.get(size_label, size_label)
+
+
+def build_summary(cart: dict) -> str:
+    """
+    Format naturel pour lecture TTS.
+    Exemple : "Vous avez un café grand et un Coca-Cola moyen. Confirmez-vous ?"
+    """
+    parts = []
+
     for p in cart.get("products", []):
-        quantity = p.get("quantity", 1)
-        name = p.get("name")
-        size = p.get("size")
+        qty   = p.get("quantity", 1)
+        name  = p.get("name", "")
+        size  = SIZE_LABELS.get(p.get("size", ""), "")
 
+        art  = article(qty, name)
+        part = f"{art} {name}"
         if size:
-            line = f"- {quantity} x {name} ({size})"
-        else:
-            line = f"- {quantity} x {name}"
+            part += f" {size_agree(size, name)}"
+        parts.append(part)
 
-        if p.get("extraSauces"):
-            sauces = ", ".join(p["extraSauces"])
-            line += f"\n   + Sauces: {sauces}"
-
-        lines.append(line)
-        total_items += quantity
-
-    # 🔹 MENUS
     for m in cart.get("menus", []):
-        quantity = m.get("quantity", 1)
-        name = m.get("name")
-        lines.append(f"- {quantity} x {name}")
-        total_items += quantity
+        qty  = m.get("quantity", 1)
+        name = m.get("name", "")
+        art  = article(qty, name)
+        parts.append(f"{art} menu {name}")
 
-    if not lines:
+    if not parts:
         return "Votre panier est vide."
 
-    summary_text = "\n".join(lines)
-    summary_text += f"\n\nTotal articles : {total_items}"
+    if len(parts) == 1:
+        items_text = parts[0]
+    elif len(parts) == 2:
+        items_text = f"{parts[0]} et {parts[1]}"
+    else:
+        items_text = ", ".join(parts[:-1]) + f" et {parts[-1]}"
 
-    return summary_text
+    return f"Vous avez {items_text}. Confirmez-vous ?"
+
+
+def build_confirmation_text(cart: dict) -> str:
+    return build_summary(cart)

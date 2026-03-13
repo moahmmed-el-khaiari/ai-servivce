@@ -7,3 +7,5 @@ python-dotenv
 twilio
 python-multipart
 rapidfuzz
+noisereduce
+webrtcvad
