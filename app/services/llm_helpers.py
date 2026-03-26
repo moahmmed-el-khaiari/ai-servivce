@@ -1,115 +1,116 @@
 """
-llm_helpers.py — Fonctions LLM pour interpréter les réponses vocales ambiguës
+llm_helpers.py — LLM interprète OUI/NON et comprend la commande en même temps
+Le LLM est le seul juge — regex uniquement pour les cas évidents (1-2 mots)
 """
 import requests
-from app.config import OPENROUTER_API_KEY, DEEPSEEK_MODEL, OPENROUTER_URL
+from app.config import GROQ_API_KEY, GROQ_LLM_URL, GROQ_LLM_MODEL
+
+
+def _build_headers():
+    return {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
 
 def _llm_call(prompt: str, max_tokens: int = 10) -> str:
-    """Appel LLM minimal"""
+    """Appel LLM HTTP sync pur — fonctionne dans run_in_executor."""
     try:
         response = requests.post(
-            OPENROUTER_URL,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
+            GROQ_LLM_URL,
+            headers=_build_headers(),
             json={
-                "model": DEEPSEEK_MODEL,
+                "model": GROQ_LLM_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
                 "max_tokens": max_tokens
             },
-            timeout=8
+            timeout=5
         )
         if response.status_code != 200:
             return ""
         return response.json()["choices"][0]["message"]["content"].strip().lower()
     except Exception as e:
-        print(f"[LLM Helper] Erreur : {e}")
+        print(f"[LLM Helper] Erreur: {e}")
         return ""
 
 
 # =============================
-# FONCTION 1 — Interpréter OUI / NON
+# FONCTION 1 — Interpreter OUI / NON
 # =============================
+
+# Mots courts évidents — pas besoin de LLM
+_FAST_YES = {"oui", "yes", "ok", "ouais", "wui", "voui", "ui", "wi", "oue", "ouai",
+             "affirmatif", "parfait", "exact", "daccord", "confirme", "confirmé",
+             "oui confirme", "je confirme", "oui je confirme", "c est bon", "bien sur"}
+_FAST_NO  = {"non", "no", "nan", "nope", "negatif", "jamais", "neu", "nee", "nein", "nah"}
+
+
 def interpret_yes_no(message: str) -> str | None:
     """
-    Retourne "oui", "non", ou None si pas clair.
-    Utilise le LLM pour comprendre les réponses ambiguës.
+    Le LLM comprend la réponse du client — oui, non, ou inconnu.
+    Regex uniquement pour les réponses très courtes et évidentes (1-2 mots).
+    Gère : "Oui je confirme", "Non pour aujourd'hui je veux...", "Ah oui bien sûr", etc.
     """
+    msg_clean = message.strip().lower()
+    msg_clean = msg_clean.replace('.', '').replace(',', '').replace('!', '').replace('?', '').strip()
+    words = msg_clean.split()
 
-    msg = message.strip().lower()
-    msg_clean = msg.replace('.', '').replace(',', '').replace('!', '').replace('?', '').strip()
-
-    # ✅ Détection rapide — variantes STT incluses
-    FAST_YES = [
-        "oui", "yes", "ok", "ouais", "bien sur", "absolument",
-        "tout a fait", "affirmatif", "voila", "d accord", "daccord",
-        "parfait", "super", "exact", "exactement", "c est bon",
-        "wui", "voui", "mouais", "ah oui", "oh oui",
-        "ui", "wi", "oue", "ouai",
-    ]
-    FAST_NO = [
-        "non", "no", "nan", "nope", "pas du tout",
-        "negatif", "jamais", "annuler",
-        "bon",      # STT: "non" → "bon"
-        "neu",      # STT: "non" → "neu"
-        "nee", "nein", "nah",
-        "bah non", "oh non", "ah non", "mais non",
-        "surtout pas", "rien",
-        "c est tout", "pas de",
-    ]
-
-    for w in FAST_YES:
-        if w in msg_clean.split() or msg_clean == w:
-            print(f"[YesNo] Fast ✅ OUI — '{message}'")
-            return "oui"
-    for w in FAST_NO:
-        if w in msg_clean.split() or msg_clean == w:
-            print(f"[YesNo] Fast ✅ NON — '{message}'")
-            return "non"
-
-    # ✅ Détection par sous-chaîne
-    if any(neg in msg_clean for neg in ["non", "pas de", "rien", "c est tout", "surtout pas"]):
-        print(f"[YesNo] Substring ✅ NON — '{message}'")
-        return "non"
-    if any(pos in msg_clean for pos in ["oui", "ouais", "d accord", "ok", "bien sur", "volontiers"]):
-        print(f"[YesNo] Substring ✅ OUI — '{message}'")
+    # ✅ Phrases de confirmation explicites — toujours OUI
+    _CONFIRM_PHRASES = {
+        "oui je confirme", "je confirme", "oui confirme",
+        "ah oui je confirme", "oui bien sur", "c est bon",
+        "tout a fait", "bien sur", "absolument", "evidemment",
+        "oui oui", "oui bien sur je confirme",
+    }
+    if msg_clean in _CONFIRM_PHRASES or any(p in msg_clean for p in _CONFIRM_PHRASES):
+        print(f"[YesNo] Fast OUI (confirmation) — '{message}'")
         return "oui"
 
-    # ✅ Filtre — mots sans rapport avec oui/non
-    YESNO_HINTS = [
-        "oui", "non", "yes", "no", "ok", "nan", "ouais", "bien", "sur",
-        "accord", "absolument", "tout", "fait", "affirm", "negatif",
-        "annul", "jamais", "pas", "voila", "parfait", "super",
-        "bon", "neu", "nee", "nein", "nah", "wui", "voui", "rien",
-        "surtout", "merci", "exact", "bah",
-    ]
-    has_hint = any(h in msg_clean for h in YESNO_HINTS)
-    if not has_hint:
-        print(f"[YesNo] Aucun mot oui/non dans '{message}' — ignoré sans LLM")
-        return None
+    # ✅ Phrases de refus explicites — toujours NON
+    _CANCEL_PHRASES = {
+        "pas du tout", "surtout pas", "jamais de la vie",
+        "c est tout", "non merci", "bah non",
+    }
+    if msg_clean in _CANCEL_PHRASES or any(p in msg_clean for p in _CANCEL_PHRASES):
+        print(f"[YesNo] Fast NON (refus) — '{message}'")
+        return "non"
 
-    # 🤖 LLM pour les cas ambigus
-    prompt = f"""Tu analyses une réponse vocale d'un client dans un restaurant.
-Le client devait répondre OUI ou NON à une question.
-Sa réponse (transcription vocale, peut contenir des erreurs) : "{message}"
+    # ✅ Réponse très courte (1-2 mots) → regex suffit, pas de LLM
+    if len(words) <= 2:
+        for w in words:
+            if w in _FAST_YES:
+                print(f"[YesNo] Fast OUI — '{message}'")
+                return "oui"
+            if w in _FAST_NO:
+                print(f"[YesNo] Fast NON — '{message}'")
+                return "non"
 
-ATTENTION : la transcription vocale déforme souvent les mots :
-- "non" peut devenir "bon", "neu", "nee", "nein", "bonne"
-- "oui" peut devenir "wui", "voui", "ouai"
-- "c'est tout" ou "rien" ou "pas de" = NON
+    # ✅ Réponse longue → LLM décide (comprend le contexte, les déformations STT, etc.)
+    prompt = f"""Tu es l'IA d'un restaurant. Un client répond à une question oui/non.
+Sa réponse vocale (peut contenir des erreurs STT) : "{message}"
 
-Réponds UNIQUEMENT par un seul mot : "oui" ou "non" ou "inconnu"
-- "oui" si la réponse exprime accord, confirmation, acceptation
-- "non" si la réponse exprime refus, négation, annulation  
-- "inconnu" si impossible de déterminer
+Exemples :
+- "Oui" → oui
+- "Non" → non
+- "Oui je confirme" → oui
+- "Non pour aujourd'hui je veux une pizza" → non
+- "Oui, un Coca grand" → oui
+- "Ah oui bien sûr" → oui
+- "Non merci" → non
+- "C'est bon" → oui
+- "C'est tout" → non
+- "Bon" → non
+- "Wui" → oui
+- "Neu" → non
+- "Bah oui" → oui
+
+Réponds UNIQUEMENT par : oui  ou  non  ou  inconnu
 
 Réponse :"""
 
     result = _llm_call(prompt, max_tokens=5)
-    print(f"[YesNo] LLM → '{result}' pour '{message}'")
+    print(f"[YesNo] LLM -> '{result}' pour '{message}'")
 
     if "oui" in result:
         return "oui"
@@ -119,77 +120,80 @@ Réponse :"""
 
 
 # =============================
-# FONCTION 2 — Interpréter la TAILLE
+# FONCTION 2 — Interpreter la TAILLE
 # =============================
+
+_FAST_SIZES = {
+    "XL": ["XL", "TRES GRAND", "TRÈS GRAND", "EXTRA LARGE", "EXTRA-LARGE", "MAXI"],
+    "L":  ["GRAND", "GRANDE", "LARGE"],
+    "M":  ["MOYEN", "MOYENNE", "MEDIUM", "NORMAL", "STANDARD",
+           "PATRIMOINE", "MOIENNE", "MOIN", "MOYA", "COMMONDEUR"],
+    "S":  ["PETIT", "PETITE", "SMALL", "PEIN", "PTIN", "P'TIT", "PTIT",
+           "LAITENTI", "LAITENTE", "LATENTI", "TITI", "PITI"],
+}
+
+# Tailles courtes isolées — vérifier avec espace pour éviter faux positifs
+_FAST_SIZES_ISOLATED = {
+    "XL": [" XL ", "XL"],
+    "L":  [" L "],
+    "M":  [" M "],
+    "S":  [" S "],
+}
+
+
 def interpret_size(message: str) -> str | None:
     """
-    Retourne "S", "M", "L", "XL", ou None si pas clair.
-    
-    ✅ CHANGEMENT CLÉ : si aucun mot de taille n'est détecté en fast,
-    on appelle TOUJOURS le LLM (plus de filtre TAILLE_HINTS qui bloquait).
-    
-    Raison : le STT déforme énormément les mots courts comme "petit" → "laitenti",
-    "moyen" → "moinne", etc. Seul le LLM peut interpréter ces déformations.
+    Le LLM comprend la taille choisie par le client.
+    Regex pour les cas évidents, LLM pour les déformations STT et cas ambigus.
     """
+    msg_upper = " " + message.upper() + " "
 
-    msg_upper = message.upper()
-
-    # ✅ Détection rapide sans LLM
-    FAST_SIZES = {
-        "XL": ["XL", "TRES GRAND", "TRÈS GRAND", "EXTRA", "EXTRA LARGE", "EXTRA-LARGE", "MAXI"],
-        "L":  ["GRAND", "GRANDE", "LARGE", " L "],
-        "M":  ["MOYEN", "MOYENNE", "MEDIUM", " M ", "NORMAL", "STANDARD",
-               "PATRIMOINE", "MOIENNE", "MOIN", "UN PAIN MOYENNE", "PAIN MOYENNE",
-               "ILTAI MOYA", "MOYA", "COMMONDEUR"],
-        "S":  ["PETIT", "PETITE", "SMALL", " S ", "PAIN", "PEIN", "PTIN", "P'TIT", "PTIT",
-               "ET PETIT PAIN", "UN PAIN",
-               # ✅ Nouvelles déformations STT de "petit"
-               "LAITENTI", "LAITENTE", "LATENTI", "TITI", "PITI"],
-    }
-    for size, keywords in FAST_SIZES.items():
+    # ✅ Fast match — mots clairs
+    for size, keywords in _FAST_SIZES.items():
         for kw in keywords:
             if kw in msg_upper:
-                print(f"[Size] Fast ✅ {size} — '{message}'")
+                print(f"[Size] Fast {size} — '{message}'")
                 return size
 
-    # ✅ CHANGEMENT : plus de filtre TAILLE_HINTS
-    # On appelle TOUJOURS le LLM si le fast match n'a rien trouvé.
-    # Le LLM est bien meilleur pour interpréter les déformations STT.
-    # Le coût est ~1-2s de latence, mais c'est mieux que de rater la taille.
+    # Tailles isolées (S, M, L, XL seuls)
+    for size, keywords in _FAST_SIZES_ISOLATED.items():
+        for kw in keywords:
+            if kw in msg_upper:
+                print(f"[Size] Fast isolated {size} — '{message}'")
+                return size
 
-    print(f"[Size] Pas de fast match — appel LLM pour '{message}'")
+    # ✅ LLM pour les déformations STT et cas ambigus
+    SIZE_HINTS = {
+        "petit", "petite", "moyen", "moyenne", "grand", "grande", "xl",
+        "small", "medium", "large", "taille", "normal", "standard",
+        "maxi", "extra", "gros", "grosse", "mini",
+        "laitenti", "piti", "ptit", "pein", "ptin", "moya", "moin",
+        "patrimoine", "commondeur", "grant", "gran",
+    }
+    msg_words = set(message.lower().replace(".", " ").replace(",", " ").split())
+    if not msg_words.intersection(SIZE_HINTS):
+        print(f"[Size] Aucun mot taille detecte dans '{message}' — ignore sans LLM")
+        return None
 
-    # 🤖 LLM pour interpréter
-    prompt = f"""Tu analyses une réponse vocale d'un client dans un restaurant.
-Le client devait choisir une taille parmi : petit (S), moyen (M), grand (L), très grand (XL).
-Sa réponse (transcription vocale, PEUT CONTENIR DES ERREURS) : "{message}"
+    print(f"[Size] LLM pour '{message}'")
 
-ATTENTION — la transcription vocale déforme souvent les mots :
-- "petit" peut devenir "laitenti", "peti", "p'tit", "ptit", "piti", "paix de petit"
-- "moyen" peut devenir "moinne", "moya", "moienne", "patrimoine"
-- "grand" peut devenir "grant", "gran"
-- Si le client dit "je veux la taille petit" ou "je veux du petit" → S
-- Si le client dit "taille du milieu" ou "normal" → M
-- Si la phrase ne concerne PAS une taille → "inconnu"
+    prompt = f"""Tu analyses la réponse vocale d'un client qui choisit une taille.
+Tailles disponibles : petit (S), moyen (M), grand (L), très grand (XL).
+Réponse du client (peut contenir des erreurs STT) : "{message}"
 
-Réponds UNIQUEMENT par : "S" ou "M" ou "L" ou "XL" ou "inconnu"
+Déformations courantes :
+- "petit" → laitenti, peti, ptit, piti, pein
+- "moyen" → moinne, moya, moienne, moin
+- "grand" → grant, gran
+- "très grand" → extra, maxi, xl
 
-Exemples :
-"je prends la taille du milieu" → M
-"donnez-moi le plus grand" → XL
-"pas trop grand, normal" → M
-"je choisis la grande taille" → L
-"un laitenti" → S (déformation de "petit")
-"oui je dis une paix de petit" → S
-"je voudrais une taille petite" → S
-"merci" → inconnu
-"sous-titrage would" → inconnu
+Réponds UNIQUEMENT par : S  ou  M  ou  L  ou  XL  ou  inconnu
 
 Réponse :"""
 
     result = _llm_call(prompt, max_tokens=5)
     result = result.strip().upper().replace('"', '').replace("'", "")
-    print(f"[Size] LLM → '{result}' pour '{message}'")
+    print(f"[Size] LLM -> '{result}' pour '{message}'")
 
     if result in ["S", "M", "L", "XL"]:
         return result

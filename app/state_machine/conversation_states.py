@@ -17,5 +17,6 @@ class ConversationState(Enum):
     SELECT_PRODUCT_FROM_CATEGORY = "SELECT_PRODUCT_FROM_CATEGORY"
     ASK_ADD_MORE = "ASK_ADD_MORE"
     ASK_QUANTITY = "ASK_QUANTITY"
+    REPEAT_ORDER = "repeat_order"
     
     
